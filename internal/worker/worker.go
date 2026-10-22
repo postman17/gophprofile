@@ -154,35 +154,45 @@ func (w *Worker) handleUpload(ctx context.Context, event broker.Event) error {
 
 	reader, _, err := w.storage.Get(ctx, avatar.S3Key)
 	if err != nil {
-		w.markFailed(ctx, avatar.ID, err)
-		return fmt.Errorf("load original %s: %w", avatar.S3Key, err)
+		return errors.Join(
+			fmt.Errorf("load original %s: %w", avatar.S3Key, err),
+			w.markFailed(ctx, avatar.ID),
+		)
 	}
 	data, readErr := io.ReadAll(reader)
 	_ = reader.Close()
 	if readErr != nil {
-		w.markFailed(ctx, avatar.ID, readErr)
-		return fmt.Errorf("read original %s: %w", avatar.S3Key, readErr)
+		return errors.Join(
+			fmt.Errorf("read original %s: %w", avatar.S3Key, readErr),
+			w.markFailed(ctx, avatar.ID),
+		)
 	}
 
 	img, _, err := imaging.Decode(data)
 	if err != nil {
-		w.markFailed(ctx, avatar.ID, err)
-		return fmt.Errorf("decode original %s: %w", avatar.S3Key, err)
+		return errors.Join(
+			fmt.Errorf("decode original %s: %w", avatar.S3Key, err),
+			w.markFailed(ctx, avatar.ID),
+		)
 	}
 	width, height := imaging.Dimensions(img)
 
 	thumbnails, err := imaging.Thumbnails(img, w.sizes)
 	if err != nil {
-		w.markFailed(ctx, avatar.ID, err)
-		return fmt.Errorf("build thumbnails: %w", err)
+		return errors.Join(
+			fmt.Errorf("build thumbnails: %w", err),
+			w.markFailed(ctx, avatar.ID),
+		)
 	}
 
 	result := make(map[string]models.Thumbnail, len(thumbnails))
 	for _, thumb := range thumbnails {
 		key := service.ThumbnailKey(avatar.ID, thumb.Size.Name)
 		if err := w.storage.Put(ctx, key, thumb.MimeType, bytes.NewReader(thumb.Data), int64(len(thumb.Data))); err != nil {
-			w.markFailed(ctx, avatar.ID, err)
-			return fmt.Errorf("store thumbnail %s: %w", key, err)
+			return errors.Join(
+				fmt.Errorf("store thumbnail %s: %w", key, err),
+				w.markFailed(ctx, avatar.ID),
+			)
 		}
 		result[thumb.Size.Name] = models.Thumbnail{
 			Size:     thumb.Size.Name,
@@ -250,10 +260,6 @@ func (w *Worker) markProcessed(ctx context.Context, event broker.Event) error {
 	return nil
 }
 
-func (w *Worker) markFailed(ctx context.Context, avatarID string, cause error) {
-	if err := w.repo.SetProcessingStatus(ctx, avatarID, models.ProcessingStatusFailed); err != nil {
-		w.logger.Error("failed to mark avatar as failed", "avatar_id", avatarID, "error", err)
-		return
-	}
-	w.logger.Warn("avatar processing failed", "avatar_id", avatarID, "error", cause)
+func (w *Worker) markFailed(ctx context.Context, avatarID string) error {
+	return w.repo.SetProcessingStatus(ctx, avatarID, models.ProcessingStatusFailed)
 }

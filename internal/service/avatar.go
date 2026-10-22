@@ -69,7 +69,7 @@ func NewAvatarService(repo Repository, storage Storage, publisher Publisher, opt
 		opts.Now = func() time.Time { return time.Now().UTC() }
 	}
 	if opts.NewID == nil {
-		opts.NewID = func() string { return uuid.NewString() }
+		opts.NewID = uuid.NewString
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()

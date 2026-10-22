@@ -115,6 +115,15 @@ func TestUploadHandler(t *testing.T) {
 		require.Contains(t, recorder.Body.String(), "Invalid file format")
 	})
 
+	t.Run("storage unavailable", func(t *testing.T) {
+		app := newApp(t, 10*1024*1024, nil)
+		app.storage.PutErr = models.ErrStorage
+
+		recorder := app.do(uploadRequest(t, "user-1", "avatar.png", data))
+		require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+		require.Contains(t, recorder.Body.String(), "Storage unavailable")
+	})
+
 	t.Run("too large", func(t *testing.T) {
 		app := newApp(t, int64(len(data)-1), nil)
 		recorder := app.do(uploadRequest(t, "user-1", "avatar.png", data))

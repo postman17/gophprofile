@@ -45,10 +45,23 @@ type Config struct {
 }
 
 func Load() (Config, error) {
+	maxFileSize, err := getenvInt64("MAX_FILE_SIZE", DefaultMaxFileSize)
+	if err != nil {
+		return Config{}, err
+	}
+	workerRetries, err := getenvInt64("WORKER_RETRIES", DefaultWorkerRetries)
+	if err != nil {
+		return Config{}, err
+	}
+	workerBaseDelay, err := getenvDuration("WORKER_BASE_DELAY", DefaultWorkerBaseDelay)
+	if err != nil {
+		return Config{}, err
+	}
+
 	cfg := Config{
 		HTTPAddr:    getenv("HTTP_ADDR", DefaultHTTPAddr),
 		DatabaseURL: getenv("DATABASE_URL", ""),
-		MaxFileSize: getenvInt64("MAX_FILE_SIZE", DefaultMaxFileSize),
+		MaxFileSize: maxFileSize,
 
 		KafkaBrokers:       getenvList("KAFKA_BROKERS", nil),
 		KafkaTopicUploaded: getenv("KAFKA_TOPIC_UPLOADED", DefaultKafkaTopicUploaded),
@@ -61,8 +74,8 @@ func Load() (Config, error) {
 		S3SecretKey: getenv("S3_SECRET_KEY", ""),
 		S3Bucket:    getenv("S3_BUCKET", DefaultS3Bucket),
 
-		WorkerRetries:   int(getenvInt64("WORKER_RETRIES", DefaultWorkerRetries)),
-		WorkerBaseDelay: getenvDuration("WORKER_BASE_DELAY", DefaultWorkerBaseDelay),
+		WorkerRetries:   int(workerRetries),
+		WorkerBaseDelay: workerBaseDelay,
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -106,40 +119,28 @@ func getenv(key, def string) string {
 	return def
 }
 
-func getenvInt64(key string, def int64) int64 {
+func getenvInt64(key string, def int64) (int64, error) {
 	v, ok := os.LookupEnv(key)
 	if !ok || v == "" {
-		return def
+		return def, nil
 	}
 	n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
 	if err != nil {
-		return def
+		return 0, fmt.Errorf("config: parse %s=%q as integer: %w", key, v, err)
 	}
-	return n
+	return n, nil
 }
 
-func getenvBool(key string, def bool) bool {
+func getenvDuration(key string, def time.Duration) (time.Duration, error) {
 	v, ok := os.LookupEnv(key)
 	if !ok || v == "" {
-		return def
-	}
-	b, err := strconv.ParseBool(strings.TrimSpace(v))
-	if err != nil {
-		return def
-	}
-	return b
-}
-
-func getenvDuration(key string, def time.Duration) time.Duration {
-	v, ok := os.LookupEnv(key)
-	if !ok || v == "" {
-		return def
+		return def, nil
 	}
 	d, err := time.ParseDuration(strings.TrimSpace(v))
 	if err != nil {
-		return def
+		return 0, fmt.Errorf("config: parse %s=%q as duration: %w", key, v, err)
 	}
-	return d
+	return d, nil
 }
 
 func getenvList(key string, def []string) []string {

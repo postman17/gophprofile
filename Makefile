@@ -1,4 +1,7 @@
 GO ?= go
+GO_VERSION := $(shell awk '/^go / {print "go" $$2}' go.mod)
+GOLANGCI_LINT_VERSION ?= v2.5.0
+GOLANGCI_LINT ?= GOTOOLCHAIN=$(GO_VERSION) $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 BIN_DIR ?= bin
 SERVER_BIN := $(BIN_DIR)/gophprofile-server
 WORKER_BIN := $(BIN_DIR)/worker
@@ -15,7 +18,7 @@ export
 endif
 
 .DEFAULT_GOAL := help
-.PHONY: help build build-server build-worker run-server run-worker tidy fmt fmt-check vet test test-race cover cover-html check docker-build up up-build down down-volumes ps logs logs-server logs-worker restart clean
+.PHONY: help build build-server build-worker run-server run-worker tidy fmt fmt-check vet lint test test-race cover cover-html check docker-build up up-build down down-volumes ps logs logs-server logs-worker restart clean
 
 help: ## Показать список команд
 	@awk 'BEGIN {FS = ":.*##"; printf "Использование: make <команда>\n\n"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -48,6 +51,9 @@ fmt-check: ## Проверить форматирование (падает, е�
 vet: ## Статический анализ
 	$(GO) vet ./...
 
+lint: ## Запустить golangci-lint
+	$(GOLANGCI_LINT) run ./...
+
 test: ## Прогнать unit-тесты
 	$(GO) test ./...
 
@@ -62,7 +68,7 @@ cover-html: cover ## Отчёт о покрытии в coverage.html
 	$(GO) tool cover -html=$(COVER_FILE) -o $(COVER_HTML)
 	@echo "Отчёт: $(COVER_HTML)"
 
-check: fmt-check vet test ## Полная проверка перед коммитом
+check: fmt-check vet lint test ## Полная проверка перед коммитом
 
 docker-build: ## Собрать docker-образы
 	$(DOCKER_COMPOSE) $(COMPOSE_FILES) build

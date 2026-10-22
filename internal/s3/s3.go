@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
-	"os"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -23,23 +21,19 @@ type S3Store struct {
 	client *s3.Client
 }
 
-func NewS3Client(ctx context.Context, endpoint string, accessKey string, secreetKey string, bucket string) *S3Store {
+func NewS3Client(ctx context.Context, endpoint, accessKey, secretKey, bucket string) (*S3Store, error) {
 	cfg, err := config.LoadDefaultConfig(ctx,
 		config.WithRegion("ru-1"),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secreetKey, "")),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
 	)
 	if err != nil {
-		slog.Error("s3 init failed", "err", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("load s3 config: %w", err)
 	}
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.BaseEndpoint = aws.String(endpoint)
 		o.UsePathStyle = true
 	})
-	return &S3Store{
-		bucket,
-		client,
-	}
+	return &S3Store{bucket: bucket, client: client}, nil
 }
 
 func (s *S3Store) EnsureBucket(ctx context.Context) error {

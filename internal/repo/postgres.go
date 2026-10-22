@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
-	"os"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -16,33 +14,26 @@ import (
 
 const avatarColumns = `id::text, user_id, file_name, mime_type, size_bytes, s3_key,
 	COALESCE(thumbnail_s3_keys::text, '{}'), width, height, etag,
-	upload_status, processing_status, created_at, updated_at, deleted_at`
+	upload_status::text, processing_status::text, created_at, updated_at, deleted_at`
 
 type PostgresStorage struct {
 	pool *pgxpool.Pool
-	// queries *db.Queries
 }
 
-func NewPostgresStorage(ctx context.Context, dsn string) *PostgresStorage {
+func NewPostgresStorage(ctx context.Context, dsn string) (*PostgresStorage, error) {
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		slog.Error("create pool failed", "err", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("create pool: %w", err)
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		slog.Error("ping database", "err", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("ping database: %w", err)
 	}
 	if err := Migrate(ctx, dsn); err != nil {
 		pool.Close()
-		slog.Error("migrate failed", "err", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("migrate: %w", err)
 	}
-	return &PostgresStorage{
-		pool: pool,
-		// queries: db.New(pool),
-	}
+	return &PostgresStorage{pool: pool}, nil
 }
 
 func (s *PostgresStorage) Close() {
@@ -61,7 +52,7 @@ func (s *PostgresStorage) Create(ctx context.Context, avatar *models.Avatar) err
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO avatars (id, user_id, file_name, mime_type, size_bytes, s3_key, thumbnail_s3_keys,
 			width, height, etag, upload_status, processing_status, created_at, updated_at)
-		VALUES ($1::text::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13, $14)`,
+		VALUES ($1::text::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11::text::avatar_upload_status, $12::text::avatar_processing_status, $13, $14)`,
 		avatar.ID, avatar.UserID, avatar.FileName, avatar.MimeType, avatar.SizeBytes, avatar.S3Key,
 		thumbnails, avatar.Width, avatar.Height, avatar.ETag,
 		string(avatar.UploadStatus), string(avatar.ProcessingStatus), avatar.CreatedAt, avatar.UpdatedAt,
@@ -112,7 +103,7 @@ func (s *PostgresStorage) ListByUser(ctx context.Context, userID string) ([]*mod
 
 func (s *PostgresStorage) SoftDelete(ctx context.Context, id, userID string) error {
 	tag, err := s.pool.Exec(ctx, `UPDATE avatars
-		SET deleted_at = NOW(), updated_at = NOW(), upload_status = $3
+		SET deleted_at = NOW(), updated_at = NOW(), upload_status = $3::text::avatar_upload_status
 		WHERE id = $1::text::uuid AND user_id = $2 AND deleted_at IS NULL`,
 		id, userID, string(models.UploadStatusDeleted))
 	if err != nil {
@@ -126,7 +117,7 @@ func (s *PostgresStorage) SoftDelete(ctx context.Context, id, userID string) err
 
 func (s *PostgresStorage) SetProcessingStatus(ctx context.Context, id string, status models.ProcessingStatus) error {
 	tag, err := s.pool.Exec(ctx, `UPDATE avatars
-		SET processing_status = $2, updated_at = NOW()
+		SET processing_status = $2::text::avatar_processing_status, updated_at = NOW()
 		WHERE id = $1::text::uuid`,
 		id, string(status))
 	if err != nil {
@@ -144,7 +135,7 @@ func (s *PostgresStorage) SetProcessed(ctx context.Context, id string, thumbnail
 		return err
 	}
 	tag, err := s.pool.Exec(ctx, `UPDATE avatars
-		SET thumbnail_s3_keys = $2::jsonb, width = $3, height = $4, processing_status = $5, updated_at = NOW()
+		SET thumbnail_s3_keys = $2::jsonb, width = $3, height = $4, processing_status = $5::text::avatar_processing_status, updated_at = NOW()
 		WHERE id = $1::text::uuid`,
 		id, payload, width, height, string(models.ProcessingStatusCompleted))
 	if err != nil {

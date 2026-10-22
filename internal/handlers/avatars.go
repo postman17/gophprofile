@@ -188,6 +188,8 @@ func (h *AvatarHandler) writeError(c *echo.Context, err error) error {
 			Error:   "Unsupported output format",
 			Details: "Supported output formats: jpeg, png",
 		})
+	case errors.Is(err, models.ErrStorage):
+		return c.JSON(http.StatusServiceUnavailable, models.ErrorResponse{Error: "Storage unavailable"})
 	default:
 		h.logger.Error("request failed", "error", err, "path", c.Request().URL.Path)
 		return c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: "Internal server error"})

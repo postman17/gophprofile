@@ -17,17 +17,17 @@ var embedMigrations embed.FS
 func Migrate(ctx context.Context, dsn string) error {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
-		return fmt.Errorf("open db conn failed %s", err)
+		return fmt.Errorf("open database connection: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	if err := goose.SetDialect("postgres"); err != nil {
-		return fmt.Errorf("db dialect failed %s", err)
+		return fmt.Errorf("set database dialect: %w", err)
 	}
 
 	migrationsFS, err := fs.Sub(embedMigrations, "migrations")
 	if err != nil {
-		return fmt.Errorf("migrations sub fs failed %s", err)
+		return fmt.Errorf("create migrations sub fs: %w", err)
 	}
 
 	provider, err := goose.NewProvider(
@@ -36,11 +36,11 @@ func Migrate(ctx context.Context, dsn string) error {
 		migrationsFS,
 	)
 	if err != nil {
-		return fmt.Errorf("goose provider failed %s", err)
+		return fmt.Errorf("create goose provider: %w", err)
 	}
 
 	if _, err := provider.Up(ctx); err != nil {
-		return fmt.Errorf("migrate failed %s", err)
+		return fmt.Errorf("migrate failed: %w", err)
 	}
 	return nil
 }

@@ -91,15 +91,25 @@ func TestLoadRejectsNegativeLimits(t *testing.T) {
 	require.Contains(t, err.Error(), "MAX_FILE_SIZE")
 }
 
-func TestLoadIgnoresInvalidNumbers(t *testing.T) {
-	setValidEnv(t)
-	t.Setenv("MAX_FILE_SIZE", "not-a-number")
-	t.Setenv("WORKER_RETRIES", "nope")
-	t.Setenv("WORKER_BASE_DELAY", "soon")
+func TestLoadRejectsInvalidNumbers(t *testing.T) {
+	tests := []struct {
+		key   string
+		value string
+	}{
+		{key: "MAX_FILE_SIZE", value: "not-a-number"},
+		{key: "WORKER_RETRIES", value: "nope"},
+		{key: "WORKER_BASE_DELAY", value: "soon"},
+	}
 
-	cfg, err := config.Load()
-	require.NoError(t, err)
-	require.Equal(t, int64(config.DefaultMaxFileSize), cfg.MaxFileSize)
-	require.Equal(t, config.DefaultWorkerRetries, cfg.WorkerRetries)
-	require.Equal(t, config.DefaultWorkerBaseDelay, cfg.WorkerBaseDelay)
+	for _, test := range tests {
+		t.Run(test.key, func(t *testing.T) {
+			setValidEnv(t)
+			t.Setenv(test.key, test.value)
+
+			_, err := config.Load()
+			require.Error(t, err)
+			require.Contains(t, err.Error(), test.key)
+			require.Contains(t, err.Error(), test.value)
+		})
+	}
 }

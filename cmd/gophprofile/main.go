@@ -39,10 +39,16 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	postgres := repo.NewPostgresStorage(ctx, cfg.DatabaseURL)
+	postgres, err := repo.NewPostgresStorage(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return fmt.Errorf("initialize postgres: %w", err)
+	}
 	defer postgres.Close()
 
-	storage := s3.NewS3Client(ctx, cfg.S3Endpoint, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3Bucket)
+	storage, err := s3.NewS3Client(ctx, cfg.S3Endpoint, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3Bucket)
+	if err != nil {
+		return fmt.Errorf("initialize s3: %w", err)
+	}
 	if err := app.EnsureBucket(ctx, storage); err != nil {
 		return err
 	}

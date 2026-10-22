@@ -86,7 +86,7 @@ func Extension(mime string) string {
 func Decode(data []byte) (image.Image, string, error) {
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
-		return nil, "", fmt.Errorf("%w: %s", ErrInvalidImage, err)
+		return nil, "", fmt.Errorf("%w: %w", ErrInvalidImage, err)
 	}
 	return img, SniffMime(data), nil
 }
