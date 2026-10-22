@@ -1,0 +1,56 @@
+{{define "content"}}
+<h1>Загрузка аватарки</h1>
+{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+<form class="card" method="post" action="/web/upload" enctype="multipart/form-data" id="upload-form">
+  <label for="user_id">User ID</label>
+  <input type="text" id="user_id" name="user_id" value="{{.UserID}}" placeholder="user-42" required>
+
+  <label class="drop" id="drop" for="file">
+    <span id="droptext">Перетащите изображение сюда или нажмите, чтобы выбрать файл</span>
+    <input type="file" id="file" name="file" accept="image/png,image/jpeg,image/webp" required style="display:none">
+  </label>
+
+  <div class="preview" id="preview"><img alt="Превью"></div>
+
+  <button type="submit">Загрузить</button>
+  <p class="hint">JPEG, PNG или WebP, до {{.MaxFileSizeMB}} МБ. Миниатюры 100×100 и 300×300 создаются в фоне.</p>
+</form>
+<script>
+(function () {
+  var drop = document.getElementById('drop');
+  var dropText = document.getElementById('droptext');
+  var file = document.getElementById('file');
+  var preview = document.getElementById('preview');
+
+  function show() {
+    if (!file.files || !file.files.length) return;
+    dropText.textContent = 'Файл: ' + file.files[0].name;
+    preview.style.display = 'block';
+    preview.querySelector('img').src = URL.createObjectURL(file.files[0]);
+  }
+
+  ['dragenter', 'dragover'].forEach(function (name) {
+    drop.addEventListener(name, function (event) {
+      event.preventDefault();
+      drop.classList.add('hover');
+    });
+  });
+
+  ['dragleave', 'drop'].forEach(function (name) {
+    drop.addEventListener(name, function (event) {
+      event.preventDefault();
+      drop.classList.remove('hover');
+    });
+  });
+
+  drop.addEventListener('drop', function (event) {
+    if (event.dataTransfer && event.dataTransfer.files.length) {
+      file.files = event.dataTransfer.files;
+      show();
+    }
+  });
+
+  file.addEventListener('change', show);
+})();
+</script>
+{{end}}

@@ -1,0 +1,43 @@
+{{define "content"}}
+<h1>Галерея {{.UserID}}</h1>
+{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+{{if .Avatars}}
+<div class="grid">
+{{range .Avatars}}
+  <article class="avatar">
+    <a href="{{.FullURL}}" target="_blank" rel="noopener">
+      <img src="{{.ThumbURL}}" alt="{{.FileName}}" width="100" height="100" loading="lazy">
+    </a>
+    <p class="name">{{.FileName}}</p>
+    <p class="meta">{{.Status}} · {{.CreatedAt}}</p>
+    <button class="danger" type="button" data-id="{{.ID}}" data-user="{{$.UserID}}">Удалить</button>
+  </article>
+{{end}}
+</div>
+<p class="hint"><a href="/web/upload?user_id={{.UserID}}">Загрузить ещё</a></p>
+<script>
+document.querySelectorAll('button[data-id]').forEach(function (button) {
+  button.addEventListener('click', function () {
+    if (!confirm('Удалить аватарку?')) return;
+
+    fetch('/api/v1/avatars/' + button.dataset.id, {
+      method: 'DELETE',
+      headers: { 'X-User-ID': button.dataset.user }
+    }).then(function (response) {
+      if (response.status === 204 || response.status === 404) {
+        location.reload();
+        return;
+      }
+      return response.json().then(function (payload) {
+        alert(payload.error || 'Не удалось удалить аватарку');
+      });
+    }).catch(function () {
+      alert('Ошибка сети');
+    });
+  });
+});
+</script>
+{{else}}
+<p class="empty">У пользователя пока нет аватарок. <a href="/web/upload?user_id={{.UserID}}">Загрузить</a></p>
+{{end}}
+{{end}}
