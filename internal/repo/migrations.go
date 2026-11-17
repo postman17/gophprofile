@@ -9,6 +9,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
+	"github.com/pressly/goose/v3/lock"
 )
 
 //go:embed migrations/*.sql
@@ -30,10 +31,16 @@ func Migrate(ctx context.Context, dsn string) error {
 		return fmt.Errorf("create migrations sub fs: %w", err)
 	}
 
+	// Both API and worker migrate on startup; serialize DDL across processes.
+	locker, err := lock.NewPostgresSessionLocker()
+	if err != nil {
+		return fmt.Errorf("create migration locker: %w", err)
+	}
 	provider, err := goose.NewProvider(
 		goose.DialectPostgres,
 		db,
 		migrationsFS,
+		goose.WithSessionLocker(locker),
 	)
 	if err != nil {
 		return fmt.Errorf("create goose provider: %w", err)

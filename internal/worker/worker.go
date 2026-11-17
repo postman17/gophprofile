@@ -80,16 +80,16 @@ func (w *Worker) HandleWithRetry(ctx context.Context, event broker.Event) error 
 
 		processed, checkErr := w.isProcessed(ctx, event.ID)
 		if checkErr != nil {
-			w.logger.Error("failed to check event state", "event_id", event.ID, "error", checkErr)
+			w.logger.ErrorContext(ctx, "failed to check event state", "event_id", event.ID, "error", checkErr)
 		} else if processed {
-			w.logger.Warn("event already processed by another attempt", "event_id", event.ID)
+			w.logger.WarnContext(ctx, "event already processed by another attempt", "event_id", event.ID)
 			return nil
 		}
 
 		if attempt == w.retries {
 			break
 		}
-		w.logger.Warn("event handling failed, retrying",
+		w.logger.WarnContext(ctx, "event handling failed, retrying",
 			"event_id", event.ID, "event_type", event.Type, "attempt", attempt,
 			"retry_in", delay.String(), "error", err)
 
@@ -110,7 +110,7 @@ func (w *Worker) HandleEvent(ctx context.Context, event broker.Event) error {
 		return err
 	}
 	if processed {
-		w.logger.Debug("skip already processed event", "event_id", event.ID, "event_type", event.Type)
+		w.logger.DebugContext(ctx, "skip already processed event", "event_id", event.ID, "event_type", event.Type)
 		return nil
 	}
 
@@ -120,7 +120,7 @@ func (w *Worker) HandleEvent(ctx context.Context, event broker.Event) error {
 	case models.EventTypeDeleted:
 		return w.handleDeleted(ctx, event)
 	default:
-		w.logger.Warn("skip unknown event type", "event_type", event.Type, "event_id", event.ID)
+		w.logger.WarnContext(ctx, "skip unknown event type", "event_type", event.Type, "event_id", event.ID)
 		return w.markProcessed(ctx, event)
 	}
 }
@@ -134,17 +134,17 @@ func (w *Worker) handleUpload(ctx context.Context, event broker.Event) error {
 	avatar, err := w.repo.GetByID(ctx, payload.AvatarID)
 	if err != nil {
 		if errors.Is(err, models.ErrNotFound) {
-			w.logger.Warn("avatar not found, nothing to process", "avatar_id", payload.AvatarID)
+			w.logger.WarnContext(ctx, "avatar not found, nothing to process", "avatar_id", payload.AvatarID)
 			return w.markProcessed(ctx, event)
 		}
 		return err
 	}
 	if avatar.Deleted() {
-		w.logger.Info("avatar deleted before processing, skip", "avatar_id", avatar.ID)
+		w.logger.InfoContext(ctx, "avatar deleted before processing, skip", "avatar_id", avatar.ID)
 		return w.markProcessed(ctx, event)
 	}
 	if avatar.Processed() {
-		w.logger.Debug("avatar already processed", "avatar_id", avatar.ID)
+		w.logger.DebugContext(ctx, "avatar already processed", "avatar_id", avatar.ID)
 		return w.markProcessed(ctx, event)
 	}
 
@@ -207,7 +207,7 @@ func (w *Worker) handleUpload(ctx context.Context, event broker.Event) error {
 		return fmt.Errorf("save processing result: %w", err)
 	}
 
-	w.logger.Info("avatar processed", "avatar_id", avatar.ID, "width", width, "height", height, "thumbnails", len(result))
+	w.logger.InfoContext(ctx, "avatar processed", "avatar_id", avatar.ID, "width", width, "height", height, "thumbnails", len(result))
 	return w.markProcessed(ctx, event)
 }
 
@@ -235,7 +235,7 @@ func (w *Worker) handleDeleted(ctx context.Context, event broker.Event) error {
 		}
 	}
 
-	w.logger.Info("avatar files deleted", "avatar_id", payload.AvatarID, "objects", len(keys))
+	w.logger.InfoContext(ctx, "avatar files deleted", "avatar_id", payload.AvatarID, "objects", len(keys))
 	return w.markProcessed(ctx, event)
 }
 
@@ -255,7 +255,7 @@ func (w *Worker) markProcessed(ctx context.Context, event broker.Event) error {
 		return err
 	}
 	if !inserted {
-		w.logger.Debug("event id already recorded", "event_id", event.ID)
+		w.logger.DebugContext(ctx, "event id already recorded", "event_id", event.ID)
 	}
 	return nil
 }

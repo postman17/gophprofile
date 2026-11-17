@@ -1,0 +1,52 @@
+groups:
+  - name: gophprofile
+    rules:
+      - alert: HighHTTPErrorRate
+        expr: sum(rate(http_requests_total{job="gophprofile-server",status=~"5..",route!="/health"}[5m])) / clamp_min(sum(rate(http_requests_total{job="gophprofile-server",route!="/health"}[5m])), 0.001) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HTTP 5xx rate exceeds 10%"
+      - alert: HighUploadErrorRate
+        expr: sum(rate(avatars_uploads_total{job="gophprofile-server",status="error"}[5m])) / clamp_min(sum(rate(avatars_uploads_total{job="gophprofile-server"}[5m])), 0.001) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Avatar upload error rate exceeds 10%"
+      - alert: HighResponseTime
+        expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{job="gophprofile-server",route!="/health"}[5m]))) > 5
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HTTP p95 latency exceeds 5 seconds"
+      - alert: HighUploadDuration
+        expr: histogram_quantile(0.95, sum by (le) (rate(avatars_upload_duration_seconds_bucket{job="gophprofile-server"}[5m]))) > 5
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Upload p95 latency exceeds 5 seconds"
+      - alert: ServiceDown
+        expr: up{job=~"gophprofile-server|gophprofile-worker"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Application metrics endpoint is unavailable"
+      - alert: KafkaConsumerLag
+        expr: sum(kafka_consumergroup_lag{consumergroup="avatar-worker"}) > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Avatar worker is more than 100 messages behind"
+      - alert: StorageInventoryStale
+        expr: time() - avatars_storage_last_success_timestamp_seconds{job="gophprofile-server"} > 180
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "S3 inventory has not been refreshed for 3 minutes"

@@ -145,7 +145,7 @@ func (h *AvatarHandler) writeImage(c *echo.Context, img *service.Image) error {
 	response.WriteHeader(http.StatusOK)
 
 	if _, err := io.Copy(response, img.Reader); err != nil {
-		h.logger.Error("failed to stream image", "error", err, "path", c.Request().URL.Path)
+		h.logger.ErrorContext(c.Request().Context(), "failed to stream image", "error", err, "path", c.Request().URL.Path)
 	}
 	return nil
 }
@@ -191,7 +191,7 @@ func (h *AvatarHandler) writeError(c *echo.Context, err error) error {
 	case errors.Is(err, models.ErrStorage):
 		return c.JSON(http.StatusServiceUnavailable, models.ErrorResponse{Error: "Storage unavailable"})
 	default:
-		h.logger.Error("request failed", "error", err, "path", c.Request().URL.Path)
+		h.logger.ErrorContext(c.Request().Context(), "request failed", "error", err, "path", c.Request().URL.Path)
 		return c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: "Internal server error"})
 	}
 }

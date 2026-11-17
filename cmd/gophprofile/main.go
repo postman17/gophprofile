@@ -16,6 +16,7 @@ import (
 	"github.com/postman17/gophprofile/internal/config"
 	"github.com/postman17/gophprofile/internal/handlers"
 	"github.com/postman17/gophprofile/internal/middleware"
+	"github.com/postman17/gophprofile/internal/observability"
 	"github.com/postman17/gophprofile/internal/repo"
 	"github.com/postman17/gophprofile/internal/s3"
 	"github.com/postman17/gophprofile/internal/service"
@@ -38,12 +39,23 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	shutdownTelemetry, err := observability.Init(ctx, "gophprofile-server")
+	if err != nil {
+		return err
+	}
+	defer shutdownTelemetry()
+	stopMetrics, err := observability.ServeMetrics(ctx, cfg.MetricsAddr)
+	if err != nil {
+		return fmt.Errorf("metrics listener: %w", err)
+	}
+	defer stopMetrics()
 
 	postgres, err := repo.NewPostgresStorage(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("initialize postgres: %w", err)
 	}
 	defer postgres.Close()
+	postgres.RegisterMetrics()
 
 	storage, err := s3.NewS3Client(ctx, cfg.S3Endpoint, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3Bucket)
 	if err != nil {
@@ -53,11 +65,14 @@ func run() error {
 		return err
 	}
 
+	go storage.MonitorInventory(ctx)
+
 	kafka, err := app.ConnectKafka(ctx, cfg, "gophprofile-server")
 	if err != nil {
 		return err
 	}
 	defer func() { _ = kafka.Close() }()
+	defer stop()
 
 	avatarService := service.NewAvatarService(postgres, storage, kafka, service.Options{
 		MaxFileSize: cfg.MaxFileSize,
@@ -75,6 +90,7 @@ func run() error {
 
 	e := echo.New()
 	e.Logger = slog.Default()
+	e.Use(observability.HTTP, echomw.Recover())
 
 	uploadMiddleware := []echo.MiddlewareFunc{
 		middleware.PayloadTooLarge(cfg.MaxFileSize),

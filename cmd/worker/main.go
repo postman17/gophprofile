@@ -11,6 +11,7 @@ import (
 
 	"github.com/postman17/gophprofile/internal/app"
 	"github.com/postman17/gophprofile/internal/config"
+	"github.com/postman17/gophprofile/internal/observability"
 	"github.com/postman17/gophprofile/internal/repo"
 	"github.com/postman17/gophprofile/internal/s3"
 	"github.com/postman17/gophprofile/internal/worker"
@@ -32,12 +33,23 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	shutdownTelemetry, err := observability.Init(ctx, "gophprofile-worker")
+	if err != nil {
+		return err
+	}
+	defer shutdownTelemetry()
+	stopMetrics, err := observability.ServeMetrics(ctx, cfg.MetricsAddr)
+	if err != nil {
+		return fmt.Errorf("metrics listener: %w", err)
+	}
+	defer stopMetrics()
 
 	postgres, err := repo.NewPostgresStorage(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("initialize postgres: %w", err)
 	}
 	defer postgres.Close()
+	postgres.RegisterMetrics()
 
 	storage, err := s3.NewS3Client(ctx, cfg.S3Endpoint, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3Bucket)
 	if err != nil {
@@ -46,6 +58,8 @@ func run() error {
 	if err := app.EnsureBucket(ctx, storage); err != nil {
 		return err
 	}
+
+	defer stop()
 
 	eventWorker := worker.New(postgres, storage, worker.Options{
 		Retries:   cfg.WorkerRetries,

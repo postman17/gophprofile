@@ -59,6 +59,7 @@ services:
 
   server:
     build: .
+    stop_grace_period: 30s
     restart: unless-stopped
     depends_on:
       postgres:
@@ -69,6 +70,11 @@ services:
         condition: service_started
     environment: &app-env
       HTTP_ADDR: ":3200"
+      METRICS_ADDR: ":9090"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_TRACES_SAMPLER: parentbased_traceidratio
+      OTEL_TRACES_SAMPLER_ARG: "1.0"
       DATABASE_URL: postgres://gophprofile:gophprofile@postgres:5432/gophprofile?sslmode=disable
       S3_ENDPOINT: http://minio:9000
       S3_BUCKET: gophprofile
@@ -85,6 +91,7 @@ services:
 
   worker:
     build: .
+    stop_grace_period: 90s
     restart: unless-stopped
     entrypoint: ["gophprofile-worker"]
     depends_on:
@@ -96,6 +103,94 @@ services:
         condition: service_started
     environment: *app-env
 
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.123.0
+    command: ["--config=/etc/otelcol/config.yml"]
+    volumes:
+      - ./deploy/observability/otel-collector.yml:/etc/otelcol/config.yml:ro
+    depends_on: [jaeger]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=7d", "--enable-feature=exemplar-storage"]
+    volumes:
+      - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheusdata:/prometheus
+    ports: ["127.0.0.1:9090:9090"]
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml", "--storage.path=/alertmanager"]
+    volumes:
+      - ./deploy/observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanagerdata:/alertmanager
+    ports: ["127.0.0.1:9093:9093"]
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      METRICS_STORAGE_TYPE: prometheus
+      PROMETHEUS_SERVER_URL: http://prometheus:9090
+      PROMETHEUS_QUERY_NAMESPACE: traces_spanmetrics
+      PROMETHEUS_QUERY_DURATION_UNIT: ms
+      PROMETHEUS_QUERY_NORMALIZE_CALLS: "true"
+      PROMETHEUS_QUERY_NORMALIZE_DURATION: "true"
+    ports: ["127.0.0.1:16686:16686"]
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.4.2
+    command: ["-config.file=/etc/loki/config.yml"]
+    volumes:
+      - ./deploy/observability/loki.yml:/etc/loki/config.yml:ro
+      - lokidata:/loki
+    ports: ["127.0.0.1:3100:3100"]
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:v1.11.3
+    command: ["run", "--storage.path=/var/lib/alloy/data", "/etc/alloy/config.alloy"]
+    environment:
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-gophprofile}
+    volumes:
+      - ./deploy/observability/alloy.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloydata:/var/lib/alloy/data
+    depends_on: [loki]
+    restart: unless-stopped
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.9.0
+    command: ["--kafka.server=kafka:9092", "--kafka.version=3.7.0", "--topic.filter=avatar.*", "--group.filter=avatar-worker"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on: [prometheus, loki, jaeger]
+    restart: unless-stopped
+
 volumes:
+  prometheusdata:
+  alertmanagerdata:
+  lokidata:
+  alloydata:
+  grafanadata:
   pgdata:
   miniodata:

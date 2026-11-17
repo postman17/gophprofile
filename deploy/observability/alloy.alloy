@@ -1,0 +1,45 @@
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+  refresh_interval = "10s"
+}
+
+discovery.relabel "app" {
+  targets = discovery.docker.containers.targets
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    regex = sys.env("COMPOSE_PROJECT_NAME")
+    action = "keep"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    regex = "server|worker"
+    action = "keep"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label = "service"
+  }
+}
+
+loki.source.docker "app" {
+  host = "unix:///var/run/docker.sock"
+  targets = discovery.relabel.app.output
+  forward_to = [loki.process.app.receiver]
+}
+
+loki.process "app" {
+  stage.json {
+    expressions = { level = "level" }
+  }
+  stage.labels {
+    values = { level = "" }
+  }
+  // Trace/user IDs stay in JSON, avoiding unbounded Loki index cardinality.
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
