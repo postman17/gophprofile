@@ -12,6 +12,11 @@ import (
 	"github.com/IBM/sarama"
 
 	"github.com/postman17/gophprofile/internal/models"
+	"github.com/postman17/gophprofile/internal/observability"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -143,7 +148,14 @@ func (k *Kafka) PublishDelete(ctx context.Context, event models.AvatarDeleteEven
 	return k.publish(ctx, k.config.TopicDeleted, models.EventTypeDeleted, event.AvatarID, event)
 }
 
-func (k *Kafka) publish(ctx context.Context, topic, eventType, key string, payload any) error {
+func (k *Kafka) publish(ctx context.Context, topic, eventType, key string, payload any) (retErr error) {
+	ctx, span := observability.Start(ctx, "kafka publish "+topic, trace.SpanKindProducer, attribute.String("messaging.system", "kafka"), attribute.String("messaging.destination.name", topic))
+	started := time.Now()
+	defer func() {
+		observability.Events.WithLabelValues("publish", topic, observability.Status(retErr)).Inc()
+		observability.EventDuration.WithLabelValues("publish", topic).Observe(time.Since(started).Seconds())
+		observability.End(span, retErr)
+	}()
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("encode %s event: %w", eventType, err)
@@ -157,6 +169,7 @@ func (k *Kafka) publish(ctx context.Context, topic, eventType, key string, paylo
 			{Key: []byte(HeaderEventType), Value: []byte(eventType)},
 		},
 	}
+	injectTrace(ctx, message)
 	if _, _, err := k.producer.SendMessage(message); err != nil {
 		return fmt.Errorf("publish to %s: %w", topic, err)
 	}
@@ -207,7 +220,12 @@ func (k *Kafka) Close() error {
 	return errors.Join(errs...)
 }
 
-func (k *Kafka) sendToDLQ(ctx context.Context, original *sarama.ConsumerMessage, cause error) error {
+func (k *Kafka) sendToDLQ(ctx context.Context, original *sarama.ConsumerMessage, cause error) (retErr error) {
+	ctx, span := observability.Start(ctx, "kafka publish "+k.config.TopicDLQ, trace.SpanKindProducer, attribute.String("messaging.system", "kafka"), attribute.String("messaging.destination.name", k.config.TopicDLQ))
+	defer func() {
+		observability.End(span, retErr)
+		observability.Events.WithLabelValues("dlq", k.config.TopicDLQ, observability.Status(retErr)).Inc()
+	}()
 	if k.config.TopicDLQ == "" {
 		return nil
 	}
@@ -221,6 +239,7 @@ func (k *Kafka) sendToDLQ(ctx context.Context, original *sarama.ConsumerMessage,
 			{Key: []byte(HeaderError), Value: []byte(cause.Error())},
 		},
 	}
+	injectTrace(ctx, message)
 	if _, _, err := k.producer.SendMessage(message); err != nil {
 		return fmt.Errorf("publish to dlq %s: %w", k.config.TopicDLQ, err)
 	}
@@ -289,32 +308,61 @@ func (h *groupHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim s
 				return nil
 			}
 
-			event, err := h.kafka.decodeEvent(message)
-			if err != nil {
-				h.logger.Error("skip malformed kafka message", "topic", message.Topic, "error", err)
-				if dlqErr := h.kafka.sendToDLQ(session.Context(), message, err); dlqErr != nil {
-					h.logger.Error("failed to publish malformed message to dlq", "error", dlqErr)
-				}
-				session.MarkMessage(message, "malformed")
-				continue
+			if err := h.processMessage(session, message); err != nil {
+				return err
 			}
-
-			ctx, cancel := context.WithTimeout(session.Context(), eventHandlingLimit)
-			handleErr := h.handler(ctx, event)
-			cancel()
-
-			if handleErr != nil {
-				h.logger.Error("event handling failed",
-					"topic", message.Topic, "event_id", event.ID, "event_type", event.Type, "error", handleErr)
-				if dlqErr := h.kafka.sendToDLQ(session.Context(), message, handleErr); dlqErr != nil {
-					h.logger.Error("failed to publish event to dlq", "error", dlqErr)
-					return dlqErr
-				}
-			}
-			session.MarkMessage(message, "")
 
 		case <-session.Context().Done():
 			return nil
 		}
 	}
+}
+
+func injectTrace(ctx context.Context, message *sarama.ProducerMessage) {
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	for key, value := range carrier {
+		message.Headers = append(message.Headers, sarama.RecordHeader{Key: []byte(key), Value: []byte(value)})
+	}
+}
+
+func extractTrace(ctx context.Context, message *sarama.ConsumerMessage) context.Context {
+	carrier := propagation.MapCarrier{}
+	for _, header := range message.Headers {
+		if header != nil {
+			carrier.Set(string(header.Key), string(header.Value))
+		}
+	}
+	return otel.GetTextMapPropagator().Extract(ctx, carrier)
+}
+
+func (h *groupHandler) processMessage(session sarama.ConsumerGroupSession, message *sarama.ConsumerMessage) error {
+	ctx, cancel := context.WithTimeout(extractTrace(session.Context(), message), eventHandlingLimit)
+	defer cancel()
+	ctx, span := observability.Start(ctx, "kafka process "+message.Topic, trace.SpanKindConsumer, attribute.String("messaging.system", "kafka"), attribute.String("messaging.destination.name", message.Topic), attribute.Int64("messaging.kafka.offset", message.Offset), attribute.Int("messaging.destination.partition.id", int(message.Partition)))
+	started := time.Now()
+	var outcome error
+	defer func() {
+		observability.Events.WithLabelValues("process", message.Topic, observability.Status(outcome)).Inc()
+		observability.EventDuration.WithLabelValues("process", message.Topic).Observe(time.Since(started).Seconds())
+		observability.End(span, outcome)
+	}()
+	event, err := h.kafka.decodeEvent(message)
+	if err != nil {
+		h.logger.ErrorContext(ctx, "malformed kafka message", "topic", message.Topic, "partition", message.Partition, "offset", message.Offset, "error", err)
+	} else {
+		err = h.handler(ctx, event)
+		if err != nil {
+			h.logger.ErrorContext(ctx, "event handling failed", "topic", message.Topic, "event_id", event.ID, "event_type", event.Type, "error", err)
+		}
+	}
+	if err != nil {
+		outcome = err
+		// Do not acknowledge an event unless delivery to the DLQ succeeds.
+		if dlqErr := h.kafka.sendToDLQ(ctx, message, err); dlqErr != nil {
+			return dlqErr
+		}
+	}
+	session.MarkMessage(message, "")
+	return nil
 }

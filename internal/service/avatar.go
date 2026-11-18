@@ -15,6 +15,9 @@ import (
 
 	"github.com/postman17/gophprofile/internal/imaging"
 	"github.com/postman17/gophprofile/internal/models"
+	"github.com/postman17/gophprofile/internal/observability"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Repository interface {
@@ -85,7 +88,16 @@ func NewAvatarService(repo Repository, storage Storage, publisher Publisher, opt
 	}
 }
 
-func (s *AvatarService) Upload(ctx context.Context, userID, fileName string, r io.Reader) (*models.Avatar, error) {
+func (s *AvatarService) Upload(ctx context.Context, userID, fileName string, r io.Reader) (result *models.Avatar, retErr error) {
+	ctx, span := observability.Start(ctx, "avatar.upload", trace.SpanKindInternal, attribute.String("user_id", userID), attribute.String("file_name", fileName))
+	started := time.Now()
+	defer func() {
+		status := observability.Status(retErr)
+		observability.Uploads.WithLabelValues(status).Inc()
+		observability.UploadDuration.WithLabelValues(status).Observe(time.Since(started).Seconds())
+		s.logger.Log(ctx, slog.LevelInfo, "avatar upload finished", "status", status, "user_id", userID, "error", retErr)
+		observability.End(span, retErr)
+	}()
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
 		return nil, models.ErrMissingUserID
@@ -124,6 +136,7 @@ func (s *AvatarService) Upload(ctx context.Context, userID, fileName string, r i
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
+	span.SetAttributes(attribute.Int64("file_size", avatar.SizeBytes), attribute.String("mime_type", mimeType))
 	avatar.S3Key = ObjectKey(userID, avatar.ID, mimeType)
 
 	if err := s.storage.Put(ctx, avatar.S3Key, avatar.MimeType, bytes.NewReader(data), avatar.SizeBytes); err != nil {
@@ -142,7 +155,7 @@ func (s *AvatarService) Upload(ctx context.Context, userID, fileName string, r i
 	}
 	if err := s.publisher.PublishUpload(ctx, event); err != nil {
 		if statusErr := s.repo.SetProcessingStatus(ctx, avatar.ID, models.ProcessingStatusFailed); statusErr != nil {
-			s.logger.Error("failed to mark avatar as failed", "avatar_id", avatar.ID, "error", statusErr)
+			s.logger.ErrorContext(ctx, "failed to mark avatar as failed", "avatar_id", avatar.ID, "error", statusErr)
 		}
 		return nil, fmt.Errorf("publish upload event: %w", err)
 	}
@@ -277,7 +290,7 @@ func (s *AvatarService) publishDelete(ctx context.Context, avatar *models.Avatar
 		S3Keys:   avatar.S3Keys(),
 	}
 	if err := s.publisher.PublishDelete(ctx, event); err != nil {
-		s.logger.Error("failed to publish delete event", "avatar_id", avatar.ID, "error", err)
+		s.logger.ErrorContext(ctx, "failed to publish delete event", "avatar_id", avatar.ID, "error", err)
 		return fmt.Errorf("publish delete event: %w", err)
 	}
 	return nil
@@ -285,7 +298,7 @@ func (s *AvatarService) publishDelete(ctx context.Context, avatar *models.Avatar
 
 func (s *AvatarService) cleanup(ctx context.Context, key string) {
 	if err := s.storage.Delete(ctx, key); err != nil {
-		s.logger.Error("failed to cleanup object", "key", key, "error", err)
+		s.logger.ErrorContext(ctx, "failed to cleanup object", "key", key, "error", err)
 	}
 }
 

@@ -1,0 +1,43 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  batch: {}
+connectors:
+  servicegraph:
+    store:
+      ttl: 30s
+      max_items: 10000
+    virtual_node_peer_attributes: [peer.service, db.system.name, aws.s3.bucket, messaging.destination.name, server.address]
+  spanmetrics:
+    namespace: traces.spanmetrics
+    histogram:
+      unit: ms
+    dimensions:
+      - name: http.request.method
+      - name: http.route
+    metrics_flush_interval: 15s
+exporters:
+  otlphttp/jaeger:
+    endpoint: http://jaeger:4318
+    tls:
+      insecure: true
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    resource_to_telemetry_conversion:
+      enabled: true
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/jaeger, spanmetrics, servicegraph]
+    metrics:
+      receivers: [spanmetrics, servicegraph]
+      exporters: [prometheus]

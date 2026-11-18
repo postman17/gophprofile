@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/postman17/gophprofile/internal/app"
+	"github.com/postman17/gophprofile/internal/broker"
 	"github.com/postman17/gophprofile/internal/config"
+	"github.com/postman17/gophprofile/internal/observability"
 	"github.com/postman17/gophprofile/internal/repo"
 	"github.com/postman17/gophprofile/internal/s3"
 	"github.com/postman17/gophprofile/internal/worker"
@@ -31,13 +33,44 @@ func run() error {
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	var (
+		shutdownTelemetry, stopMetrics func()
+		postgres                       *repo.PostgresStorage
+		kafka                          *broker.Kafka
+	)
+	// Keep cancellation and resource shutdown in one explicit sequence, including
+	// partial initialization failures. Telemetry stays alive until cleanup ends.
+	defer func() {
+		stop()
+		if kafka != nil {
+			if err := kafka.Close(); err != nil {
+				slog.Error("close kafka", "error", err)
+			}
+		}
+		if postgres != nil {
+			postgres.Close()
+		}
+		if stopMetrics != nil {
+			stopMetrics()
+		}
+		if shutdownTelemetry != nil {
+			shutdownTelemetry()
+		}
+	}()
+	shutdownTelemetry, err = observability.Init(ctx, "gophprofile-worker")
+	if err != nil {
+		return err
+	}
+	stopMetrics, err = observability.ServeMetrics(context.WithoutCancel(ctx), cfg.MetricsAddr)
+	if err != nil {
+		return fmt.Errorf("metrics listener: %w", err)
+	}
 
-	postgres, err := repo.NewPostgresStorage(ctx, cfg.DatabaseURL)
+	postgres, err = repo.NewPostgresStorage(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("initialize postgres: %w", err)
 	}
-	defer postgres.Close()
+	postgres.RegisterMetrics()
 
 	storage, err := s3.NewS3Client(ctx, cfg.S3Endpoint, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3Bucket)
 	if err != nil {
@@ -60,7 +93,7 @@ func run() error {
 	)
 
 	for ctx.Err() == nil {
-		kafka, err := app.ConnectKafka(ctx, cfg, "gophprofile-worker")
+		kafka, err = app.ConnectKafka(ctx, cfg, "gophprofile-worker")
 		if err != nil {
 			if ctx.Err() != nil {
 				break
@@ -69,11 +102,13 @@ func run() error {
 		}
 
 		consumeErr := kafka.Consume(ctx, eventWorker.HandleWithRetry)
-		_ = kafka.Close()
-
 		if ctx.Err() != nil {
 			break
 		}
+		if err := kafka.Close(); err != nil {
+			slog.Error("close kafka before reconnect", "error", err)
+		}
+		kafka = nil
 		slog.Error("kafka consumer stopped, reconnecting", "error", consumeErr)
 
 		select {

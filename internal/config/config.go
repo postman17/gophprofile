@@ -25,6 +25,7 @@ const (
 )
 
 type Config struct {
+	MetricsAddr string
 	HTTPAddr    string
 	DatabaseURL string
 	MaxFileSize int64
@@ -59,6 +60,7 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
+		MetricsAddr: getenv("METRICS_ADDR", ":9090"),
 		HTTPAddr:    getenv("HTTP_ADDR", DefaultHTTPAddr),
 		DatabaseURL: getenv("DATABASE_URL", ""),
 		MaxFileSize: maxFileSize,
