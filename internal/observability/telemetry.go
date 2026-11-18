@@ -32,7 +32,11 @@ func Init(ctx context.Context, service string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	opts := []sdktrace.TracerProviderOption{sdktrace.WithResource(res)}
+	sampler, err := samplerFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	opts := []sdktrace.TracerProviderOption{sdktrace.WithResource(res), sdktrace.WithSampler(sampler)}
 	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" || os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") != "" {
 		exporter, err := otlptracehttp.New(ctx)
 		if err != nil {

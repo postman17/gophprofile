@@ -11,7 +11,7 @@ import (
 
 	"github.com/postman17/gophprofile/internal/observability"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-	"go.opentelemetry.io/otel/attribute"
+	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -46,7 +46,7 @@ func NewS3Client(ctx context.Context, endpoint, accessKey, secretKey, bucket str
 }
 
 func (s *S3Store) EnsureBucket(ctx context.Context) (retErr error) {
-	ctx, span := observability.Start(ctx, "s3.EnsureBucket", trace.SpanKindClient, attribute.String("db.system.name", "aws_s3"), attribute.String("aws.s3.bucket", s.bucket))
+	ctx, span := observability.Start(ctx, "s3.EnsureBucket", trace.SpanKindClient, semconv.RPCSystemKey.String("aws-api"), semconv.RPCService("S3"), semconv.RPCMethod("HeadBucket"), semconv.AWSS3Bucket(s.bucket))
 	defer func() { observability.End(span, retErr) }()
 	_, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(s.bucket)})
 	if err == nil {
@@ -59,6 +59,7 @@ func (s *S3Store) EnsureBucket(ctx context.Context) (retErr error) {
 			return fmt.Errorf("s3 head bucket failed: %w", err)
 		}
 	}
+	span.SetAttributes(semconv.RPCMethod("CreateBucket"))
 	_, err = s.client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(s.bucket)})
 	if err != nil {
 		return fmt.Errorf("s3 create bucket failed: %w", err)
@@ -67,7 +68,7 @@ func (s *S3Store) EnsureBucket(ctx context.Context) (retErr error) {
 }
 
 func (s *S3Store) Put(ctx context.Context, key, contentType string, body io.Reader, size int64) (retErr error) {
-	ctx, span := observability.Start(ctx, "s3.Put", trace.SpanKindClient, attribute.String("db.system.name", "aws_s3"), attribute.String("aws.s3.bucket", s.bucket))
+	ctx, span := observability.Start(ctx, "s3.Put", trace.SpanKindClient, semconv.RPCSystemKey.String("aws-api"), semconv.RPCService("S3"), semconv.RPCMethod("PutObject"), semconv.AWSS3Bucket(s.bucket))
 	defer func() { observability.End(span, retErr) }()
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:        aws.String(s.bucket),
@@ -83,7 +84,7 @@ func (s *S3Store) Put(ctx context.Context, key, contentType string, body io.Read
 }
 
 func (s *S3Store) Get(ctx context.Context, key string) (reader io.ReadCloser, contentTypeResult string, retErr error) {
-	ctx, span := observability.Start(ctx, "s3.Get", trace.SpanKindClient, attribute.String("db.system.name", "aws_s3"), attribute.String("aws.s3.bucket", s.bucket))
+	ctx, span := observability.Start(ctx, "s3.Get", trace.SpanKindClient, semconv.RPCSystemKey.String("aws-api"), semconv.RPCService("S3"), semconv.RPCMethod("GetObject"), semconv.AWSS3Bucket(s.bucket))
 	defer func() { observability.End(span, retErr) }()
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
@@ -104,7 +105,7 @@ func (s *S3Store) Get(ctx context.Context, key string) (reader io.ReadCloser, co
 }
 
 func (s *S3Store) Delete(ctx context.Context, key string) (retErr error) {
-	ctx, span := observability.Start(ctx, "s3.Delete", trace.SpanKindClient, attribute.String("db.system.name", "aws_s3"), attribute.String("aws.s3.bucket", s.bucket))
+	ctx, span := observability.Start(ctx, "s3.Delete", trace.SpanKindClient, semconv.RPCSystemKey.String("aws-api"), semconv.RPCService("S3"), semconv.RPCMethod("DeleteObject"), semconv.AWSS3Bucket(s.bucket))
 	defer func() { observability.End(span, retErr) }()
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.bucket),
@@ -117,7 +118,7 @@ func (s *S3Store) Delete(ctx context.Context, key string) (retErr error) {
 }
 
 func (s *S3Store) Health(ctx context.Context) (retErr error) {
-	ctx, span := observability.Start(ctx, "s3.Health", trace.SpanKindClient, attribute.String("db.system.name", "aws_s3"), attribute.String("aws.s3.bucket", s.bucket))
+	ctx, span := observability.Start(ctx, "s3.Health", trace.SpanKindClient, semconv.RPCSystemKey.String("aws-api"), semconv.RPCService("S3"), semconv.RPCMethod("HeadBucket"), semconv.AWSS3Bucket(s.bucket))
 	defer func() { observability.End(span, retErr) }()
 	if _, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(s.bucket)}); err != nil {
 		return errors.Join(models.ErrStorage, err)

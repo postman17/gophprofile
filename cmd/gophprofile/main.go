@@ -13,6 +13,7 @@ import (
 	echomw "github.com/labstack/echo/v5/middleware"
 
 	"github.com/postman17/gophprofile/internal/app"
+	"github.com/postman17/gophprofile/internal/broker"
 	"github.com/postman17/gophprofile/internal/config"
 	"github.com/postman17/gophprofile/internal/handlers"
 	"github.com/postman17/gophprofile/internal/middleware"
@@ -38,23 +39,43 @@ func run() error {
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	shutdownTelemetry, err := observability.Init(ctx, "gophprofile-server")
+	var (
+		shutdownTelemetry, stopMetrics func()
+		postgres                       *repo.PostgresStorage
+		kafka                          *broker.Kafka
+	)
+	// Keep cancellation and resource shutdown in one explicit sequence, including
+	// partial initialization failures. Telemetry stays alive until cleanup ends.
+	defer func() {
+		stop()
+		if kafka != nil {
+			if err := kafka.Close(); err != nil {
+				slog.Error("close kafka", "error", err)
+			}
+		}
+		if postgres != nil {
+			postgres.Close()
+		}
+		if stopMetrics != nil {
+			stopMetrics()
+		}
+		if shutdownTelemetry != nil {
+			shutdownTelemetry()
+		}
+	}()
+	shutdownTelemetry, err = observability.Init(ctx, "gophprofile-server")
 	if err != nil {
 		return err
 	}
-	defer shutdownTelemetry()
-	stopMetrics, err := observability.ServeMetrics(ctx, cfg.MetricsAddr)
+	stopMetrics, err = observability.ServeMetrics(context.WithoutCancel(ctx), cfg.MetricsAddr)
 	if err != nil {
 		return fmt.Errorf("metrics listener: %w", err)
 	}
-	defer stopMetrics()
 
-	postgres, err := repo.NewPostgresStorage(ctx, cfg.DatabaseURL)
+	postgres, err = repo.NewPostgresStorage(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("initialize postgres: %w", err)
 	}
-	defer postgres.Close()
 	postgres.RegisterMetrics()
 
 	storage, err := s3.NewS3Client(ctx, cfg.S3Endpoint, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3Bucket)
@@ -67,12 +88,10 @@ func run() error {
 
 	go storage.MonitorInventory(ctx)
 
-	kafka, err := app.ConnectKafka(ctx, cfg, "gophprofile-server")
+	kafka, err = app.ConnectKafka(ctx, cfg, "gophprofile-server")
 	if err != nil {
 		return err
 	}
-	defer func() { _ = kafka.Close() }()
-	defer stop()
 
 	avatarService := service.NewAvatarService(postgres, storage, kafka, service.Options{
 		MaxFileSize: cfg.MaxFileSize,
@@ -121,6 +140,12 @@ func run() error {
 	startConfig := echo.StartConfig{
 		Address:         cfg.HTTPAddr,
 		GracefulTimeout: config.DefaultGracefulTimeout,
+		// Keep Echo's logger during startup and graceful shutdown while wrapping
+		// the complete HTTP exchange, including its centralized error handler.
+		BeforeServeFunc: func(server *http.Server) error {
+			server.Handler = observability.HTTPHandler(server.Handler)
+			return nil
+		},
 	}
 	if err := startConfig.Start(ctx, e); err != nil {
 		return fmt.Errorf("http server: %w", err)

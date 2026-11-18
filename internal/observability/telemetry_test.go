@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/labstack/echo/v5"
@@ -36,7 +38,7 @@ func TestHTTPPropagationAndFinalStatus(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/avatars/private-id", nil)
 	req.Header.Set("traceparent", "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01")
 	response := httptest.NewRecorder()
-	e.ServeHTTP(response, req)
+	HTTPHandler(e).ServeHTTP(response, req)
 	if response.Code != 503 {
 		t.Fatalf("status = %d", response.Code)
 	}
@@ -51,7 +53,7 @@ func TestHTTPPropagationAndFinalStatus(t *testing.T) {
 		t.Fatalf("unexpected spans: %v", spans)
 	}
 	// Unmatched paths must share one label, regardless of the arbitrary URL.
-	e.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/random/private-user", nil))
+	HTTPHandler(e).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/random/private-user", nil))
 	if testutil.ToFloat64(HTTPRequests.WithLabelValues("GET", "unmatched", "404")) < 1 {
 		t.Fatal("missing unmatched metric")
 	}
@@ -69,5 +71,61 @@ func TestLoggerCorrelatesContextAfterWith(t *testing.T) {
 	event := record["event"].(map[string]any)
 	if event["trace_id"] != sc.TraceID().String() || event["span_id"] != sc.SpanID().String() {
 		t.Fatalf("no correlation: %s", output.String())
+	}
+}
+
+func TestHTTPPreservesErrorContractAndObservesRenderedStatus(t *testing.T) {
+	failure := echo.NewHTTPError(http.StatusBadRequest, "bad upload")
+	for _, test := range []struct {
+		name            string
+		custom, consume bool
+		expectedStatus  int
+	}{
+		{name: "framework handler", expectedStatus: 400},
+		{name: "custom error handler", custom: true, expectedStatus: 422},
+		{name: "outer middleware consumes error", consume: true, expectedStatus: 409},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			e := echo.New()
+			var observed error
+			e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+				return func(c *echo.Context) error {
+					observed = next(c)
+					if test.consume {
+						return c.NoContent(http.StatusConflict)
+					}
+					return observed
+				}
+			}, HTTP)
+			errorHandlerCalls := 0
+			if test.custom {
+				e.HTTPErrorHandler = func(c *echo.Context, err error) {
+					errorHandlerCalls++
+					if !errors.Is(err, failure) {
+						t.Errorf("error handler received %v", err)
+					}
+					if writeErr := c.NoContent(http.StatusUnprocessableEntity); writeErr != nil {
+						t.Error(writeErr)
+					}
+				}
+			}
+			e.GET("/contract", func(c *echo.Context) error { return failure })
+			before := testutil.ToFloat64(HTTPRequests.WithLabelValues("GET", "/contract", strconv.Itoa(test.expectedStatus)))
+			response := httptest.NewRecorder()
+			HTTPHandler(e).ServeHTTP(response, httptest.NewRequest("GET", "/contract", nil))
+			if !errors.Is(observed, failure) {
+				t.Fatalf("outer middleware received %v", observed)
+			}
+			if response.Code != test.expectedStatus {
+				t.Fatalf("status = %d", response.Code)
+			}
+			after := testutil.ToFloat64(HTTPRequests.WithLabelValues("GET", "/contract", strconv.Itoa(test.expectedStatus)))
+			if after != before+1 {
+				t.Fatalf("final status counted %v times", after-before)
+			}
+			if test.custom && errorHandlerCalls != 1 {
+				t.Fatalf("error handler called %d times", errorHandlerCalls)
+			}
+		})
 	}
 }

@@ -348,12 +348,16 @@ func (h *groupHandler) processMessage(session sarama.ConsumerGroupSession, messa
 		observability.End(span, outcome)
 	}()
 	event, err := h.kafka.decodeEvent(message)
-	if err == nil {
+	if err != nil {
+		h.logger.ErrorContext(ctx, "malformed kafka message", "topic", message.Topic, "partition", message.Partition, "offset", message.Offset, "error", err)
+	} else {
 		err = h.handler(ctx, event)
+		if err != nil {
+			h.logger.ErrorContext(ctx, "event handling failed", "topic", message.Topic, "event_id", event.ID, "event_type", event.Type, "error", err)
+		}
 	}
 	if err != nil {
 		outcome = err
-		h.logger.ErrorContext(ctx, "event handling failed", "topic", message.Topic, "event_id", event.ID, "error", err)
 		// Do not acknowledge an event unless delivery to the DLQ succeeds.
 		if dlqErr := h.kafka.sendToDLQ(ctx, message, err); dlqErr != nil {
 			return dlqErr

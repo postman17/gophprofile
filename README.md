@@ -22,9 +22,9 @@ docker compose up -d --build
 
 ## Трейсы и логи
 
-HTTP middleware извлекает W3C `traceparent` / `tracestate` и baggage, создаёт серверный span, учитывает итоговый HTTP status и возвращает `X-Trace-ID`. Метрики используют шаблоны маршрутов, а неизвестные URL объединяются в `unmatched`.
+HTTP-обёртка `HTTPHandler` вокруг Echo извлекает W3C `traceparent` / `tracestate` и baggage, создаёт серверный span, учитывает итоговый HTTP status и возвращает `X-Trace-ID`. Middleware `HTTP` передаёт шаблон маршрута и записывает ошибки, сохраняя исходный контракт Echo. Обёртка снимает итоговый status после выполнения всей цепочки и централизованного error handler; рендеринг ответов остаётся в Echo. Метрики используют шаблоны маршрутов, а неизвестные URL объединяются в `unmatched`.
 
-Загрузка создаёт бизнес-span `avatar.upload` с user ID, именем, размером и MIME. Запросы pgx создают клиентские PostgreSQL spans без SQL-параметров и текста запросов. S3-операции создают клиентские spans, HTTP transport AWS SDK добавляет дочерние HTTP spans и propagation. Миграции goose выполняются до обслуживания запросов отдельно от pgx tracing.
+Загрузка создаёт бизнес-span `avatar.upload` с user ID, именем, размером и MIME. Запросы pgx создают клиентские PostgreSQL spans без SQL-параметров и текста запросов. S3-операции создают клиентские spans с `rpc.system=aws-api`, `rpc.service=S3`, `rpc.method` и `aws.s3.bucket` из semconv (без `db.*`), HTTP transport AWS SDK добавляет дочерние HTTP spans и propagation. Миграции goose выполняются до обслуживания запросов отдельно от pgx tracing.
 
 Kafka producer записывает контекст в заголовки сообщения; consumer восстанавливает его до обработки, включая retries и DLQ. В Jaeger видна цепочка HTTP → upload → S3 / DB → Kafka publish → worker → S3 / DB. Spanmetrics в OpenTelemetry Collector экспортирует агрегаты для Jaeger Monitor (SPM). Servicegraph connector строит зависимости по spans; карта и интенсивность связей доступны на Service overview в Grafana. Связи между сервисами видны в распределённом трейсе; глобальный Jaeger Dependencies DAG требует отдельного dependency-processing job и постоянного trace storage.
 
@@ -60,7 +60,7 @@ Prometheus отправляет в Alertmanager правила: HTTP/upload erro
 
 Приложению нужны `DATABASE_URL`, `KAFKA_BROKERS`, `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`; остальные настройки — в `internal/config/config.go`. Для одновременного запуска server и worker на одном хосте задайте разные `METRICS_ADDR` (например `:9091` и `:9092`).
 
-`OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` включает экспорт OTLP/HTTP (порт collector по умолчанию доступен только внутри Compose; опубликуйте его для локального Go-процесса). Поддерживаются стандартные OTEL exporter headers/TLS/timeout, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER` и `OTEL_TRACES_SAMPLER_ARG`. Без endpoint spans создаются локально без сетевого экспорта. В Compose sampling 100%; для нагрузки можно выбрать `parentbased_traceidratio` и аргумент `0.1`. Traces корректно выгружаются при штатном завершении.
+`OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` включает экспорт OTLP/HTTP (порт collector по умолчанию доступен только внутри Compose; опубликуйте его для локального Go-процесса). Поддерживаются стандартные OTEL exporter headers/TLS/timeout, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER` и `OTEL_TRACES_SAMPLER_ARG`. Без endpoint spans создаются локально без сетевого экспорта. В Compose sampling по умолчанию 100%; для нагрузки задайте в `.env` `OTEL_TRACES_SAMPLER=parentbased_traceidratio` и `OTEL_TRACES_SAMPLER_ARG=0.1`. Семплер явно передаётся провайдеру; поддерживаются `always_on`, `always_off`, `traceidratio` и их `parentbased_*` варианты. Некорректные имена и доли вне [0, 1] приводят к ошибке запуска. Parent-based режим сохраняет решение входящего родительского span, поэтому 10% относится к новым корневым трейсам. Traces корректно выгружаются при штатном завершении.
 
 ## Проверка
 

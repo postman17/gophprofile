@@ -1,11 +1,12 @@
 package observability
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"strconv"
-	"time"
 
+	"github.com/felixge/httpsnoop"
 	"github.com/labstack/echo/v5"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -14,48 +15,58 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+type httpObservationKey struct{}
+type httpObservation struct{ method, route string }
+
+// HTTP captures Echo's route template and errors without changing the middleware
+// contract. Pair it with HTTPHandler around Echo to observe the rendered response.
 func HTTP(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c *echo.Context) error {
-		route := c.Path()
-		if route == "" {
-			route = "unmatched"
+		ctx := c.Request().Context()
+		if observation, ok := ctx.Value(httpObservationKey{}).(*httpObservation); ok {
+			if route := c.Path(); route != "" {
+				observation.route = route
+			}
+			span := trace.SpanFromContext(ctx)
+			span.SetName(observation.method + " " + observation.route)
+			span.SetAttributes(attribute.String("http.route", observation.route))
 		}
-		method := c.Request().Method
-		// Bound labels even for arbitrary HTTP method tokens.
+		err := next(c)
+		if err != nil {
+			trace.SpanFromContext(ctx).RecordError(err)
+		}
+		return err
+	}
+}
+
+// HTTPHandler observes the entire request, including Echo's centralized error
+// handler and outer middleware. httpsnoop preserves optional writer interfaces.
+func HTTPHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method := r.Method
 		switch method {
 		case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE":
 		default:
 			method = "OTHER"
 		}
-		parent := otel.GetTextMapPropagator().Extract(c.Request().Context(), propagation.HeaderCarrier(c.Request().Header))
-		ctx, span := Start(parent, method+" "+route, trace.SpanKindServer, attribute.String("http.request.method", method), attribute.String("http.route", route))
+		observation := &httpObservation{method: method, route: "unmatched"}
+		parent := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+		ctx, span := Start(parent, method+" unmatched", trace.SpanKindServer, attribute.String("http.request.method", method))
 		defer span.End()
-		c.SetRequest(c.Request().WithContext(ctx))
-		c.Response().Header().Set("X-Trace-ID", span.SpanContext().TraceID().String())
-		started := time.Now()
-		err := next(c)
-		// Render Echo errors before observing the final response status.
-		if err != nil {
-			c.Echo().HTTPErrorHandler(c, err)
-		}
-		status := http.StatusOK
-		if response, unwrapErr := echo.UnwrapResponse(c.Response()); unwrapErr == nil && response.Status != 0 {
-			status = response.Status
-		}
-		span.SetAttributes(attribute.Int("http.response.status_code", status))
+		ctx = context.WithValue(ctx, httpObservationKey{}, observation)
+		w.Header().Set("X-Trace-ID", span.SpanContext().TraceID().String())
+		metrics := httpsnoop.CaptureMetrics(next, w, r.WithContext(ctx))
+		status := metrics.Code
+		span.SetAttributes(attribute.Int("http.response.status_code", status), attribute.String("http.route", observation.route))
 		if status >= 500 {
 			span.SetStatus(codes.Error, http.StatusText(status))
 		}
-		if err != nil {
-			span.RecordError(err)
-		}
-		HTTPRequests.WithLabelValues(method, route, strconv.Itoa(status)).Inc()
-		HTTPDuration.WithLabelValues(method, route).Observe(time.Since(started).Seconds())
+		HTTPRequests.WithLabelValues(method, observation.route, strconv.Itoa(status)).Inc()
+		HTTPDuration.WithLabelValues(method, observation.route).Observe(metrics.Duration.Seconds())
 		level := slog.LevelInfo
 		if status >= 500 {
 			level = slog.LevelError
 		}
-		slog.Log(ctx, level, "http request", "method", method, "route", route, "status", status, "duration_seconds", time.Since(started).Seconds())
-		return nil
-	}
+		slog.Log(ctx, level, "http request", "method", method, "route", observation.route, "status", status, "duration_seconds", metrics.Duration.Seconds())
+	})
 }
